@@ -1,0 +1,63 @@
+name: framefeed
+
+services:
+  worker:
+    build: .
+    image: ghcr.io/rohanpandula/framefeed:${FRAMEFEED_TAG:-latest}
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      PHOTO_DIR: /photos
+      SITE_ROOT: /site
+      STATE_DIR: /state
+      FRAME_SECRET_FILE: /run/secrets/frame_path
+      ICLOUD_SHARED_ALBUM_URL_FILE: /run/secrets/icloud_shared_album_url
+      FRAME_WIDTH: ${FRAME_WIDTH:-1600}
+      FRAME_HEIGHT: ${FRAME_HEIGHT:-1200}
+      ROTATION_SECONDS: ${ROTATION_SECONDS:-3600}
+      NEW_PHOTO_HOLD_SECONDS: ${NEW_PHOTO_HOLD_SECONDS:-3900}
+      SCAN_INTERVAL_SECONDS: ${SCAN_INTERVAL_SECONDS:-300}
+      ALBUM_SYNC_INTERVAL_SECONDS: ${ALBUM_SYNC_INTERVAL_SECONDS:-900}
+      MIN_CROP_RETAINED_FRACTION: ${MIN_CROP_RETAINED_FRACTION:-0.75}
+      FACE_DETECTOR: ${FACE_DETECTOR:-yunet}
+      FACE_MODEL_PATH: /app/models/face_detection_yunet_2023mar.onnx
+      FACE_ANALYSIS_URL: ${FACE_ANALYSIS_URL:-}
+      FACE_MODEL: ${FACE_MODEL:-buffalo_l}
+      FACE_MIN_SCORE: ${FACE_MIN_SCORE:-0.30}
+      FACE_MARGIN_RATIO: ${FACE_MARGIN_RATIO:-0.75}
+      ANALYSIS_BATCH_SIZE: ${ANALYSIS_BATCH_SIZE:-8}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - type: bind
+        source: ${PHOTO_DIR_HOST:-./data/photos}
+        target: /photos
+      - ./data/site:/site
+      - ./data/state:/state
+      - ./secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD", "framefeed", "--healthcheck"]
+      interval: 5m
+      timeout: 20s
+      retries: 3
+      start_period: 2m
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      worker:
+        condition: service_started
+    ports:
+      - "${FRAMEFEED_PORT:-8080}:8080"
+    volumes:
+      - ./data/site:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true

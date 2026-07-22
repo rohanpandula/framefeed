@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "framefeed"
+version = "0.1.0"
+description = "Privacy-first photo pipeline for slow and e-paper displays"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{name = "Rohan Pandula"}]
+keywords = ["digital-photo-frame", "e-paper", "icloud", "self-hosted", "unraid"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+  "numpy>=2.0,<3",
+  "opencv-python-headless>=4.10,<5",
+  "Pillow>=11,<13",
+  "pillow-heif>=0.22,<2",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+
+[project.scripts]
+framefeed = "framefeed.app:main"
+
+[project.urls]
+Homepage = "https://github.com/rohanpandula/framefeed"
+Issues = "https://github.com/rohanpandula/framefeed/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
