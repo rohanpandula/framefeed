@@ -10,7 +10,9 @@ Use these values in `.env`:
 ```dotenv
 FRAME_WIDTH=1600
 FRAME_HEIGHT=1200
+FRAME_ROTATION=0
 MIN_CROP_RETAINED_FRACTION=0.75
+MIN_FACE_CROP_RETAINED_FRACTION=0.50
 ```
 
 In SenseCraft HMI:
@@ -23,8 +25,8 @@ In SenseCraft HMI:
 
 ## Portrait
 
-Use `FRAME_WIDTH=1200` and `FRAME_HEIGHT=1600`, restart the worker, and use those
-same numbers as the preview width and height.
+Use `FRAME_WIDTH=1200`, `FRAME_HEIGHT=1600`, and `FRAME_ROTATION=0`; restart the
+worker and use those same dimensions as the preview width and height.
 
 ```bash
 docker compose restart worker

@@ -167,6 +167,39 @@ class FrameWorkerTests(unittest.TestCase):
                 self.assertGreater(center[0], 200)
                 self.assertGreater(center[0], background[0])
 
+    def test_frame_rotation_turns_upside_down_photo_upright(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "upside-down.png"
+            target = root / "frame.jpg"
+            image = Image.new("RGB", (120, 160), "red")
+            for y in range(80, 160):
+                for x in range(120):
+                    image.putpixel((x, y), (0, 0, 255))
+            image.save(source)
+            config = Config(
+                photo_dir=root,
+                site_root=root,
+                state_dir=root,
+                frame_secret_file=root / "secret",
+                album_url_file=root / "album",
+                width=120,
+                height=160,
+                rotation_degrees=180,
+                jpeg_quality=95,
+            )
+            analysis = {"crop": {"mode": "cover-center", "box": [0, 0, 1, 1]}}
+
+            render_analyzed_photo(source, target, config, analysis)
+
+            with Image.open(target) as rendered:
+                top = rendered.getpixel((60, 20))
+                bottom = rendered.getpixel((60, 140))
+                self.assertGreater(top[2], 200)
+                self.assertLess(top[0], 50)
+                self.assertGreater(bottom[0], 200)
+                self.assertLess(bottom[2], 50)
+
     def test_face_safe_crop_fills_portrait_frame_and_contains_face_margin(self):
         crop = calculate_face_safe_crop(
             6000,
@@ -222,6 +255,40 @@ class FrameWorkerTests(unittest.TestCase):
         )
         self.assertEqual(crop["mode"], "contain-aspect-fallback")
         self.assertAlmostEqual(crop["retained_fraction"], 0.5)
+
+    def test_face_crop_can_zoom_beyond_general_retention_limit(self):
+        crop = calculate_face_safe_crop(
+            1536,
+            2048,
+            [{"box": [0.2109, 0.2998, 0.4635, 0.4351], "score": 0.66}],
+            1600,
+            1200,
+            margin_ratio=0.75,
+            min_retained_fraction=0.75,
+            min_face_retained_fraction=0.55,
+        )
+        self.assertEqual(crop["mode"], "cover-face-safe")
+        left, top, right, bottom = crop["box"]
+        self.assertEqual((left, right), (0.0, 1.0))
+        self.assertAlmostEqual(bottom - top, 0.5625)
+
+    def test_common_portrait_group_can_fill_landscape_frame(self):
+        crop = calculate_face_safe_crop(
+            1536,
+            2304,
+            [
+                {"box": [0.2366, 0.6523, 0.3853, 0.7715], "score": 0.72},
+                {"box": [0.4190, 0.4165, 0.5128, 0.4819], "score": 0.78},
+                {"box": [0.6183, 0.5352, 0.7626, 0.6821], "score": 0.84},
+            ],
+            1600,
+            1200,
+            margin_ratio=0.75,
+            min_retained_fraction=0.75,
+            min_face_retained_fraction=0.50,
+        )
+        self.assertEqual(crop["mode"], "cover-face-safe")
+        self.assertAlmostEqual(crop["box"][3] - crop["box"][1], 0.5)
 
     def test_analyzed_crop_preserves_ratio_without_squishing(self):
         with tempfile.TemporaryDirectory() as directory:
