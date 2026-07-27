@@ -111,6 +111,7 @@ class Config:
     album_url_file: Path
     width: int = 1200
     height: int = 1600
+    rotation_degrees: int = 0
     rotation_seconds: int = 3600
     new_photo_hold_seconds: int = 3900
     scan_interval_seconds: int = 300
@@ -124,6 +125,7 @@ class Config:
     face_min_score: float = 0.30
     face_margin_ratio: float = 0.75
     min_crop_retained_fraction: float = 0.0
+    min_face_retained_fraction: float = 0.0
     analysis_batch_size: int = 8
 
     @classmethod
@@ -141,6 +143,7 @@ class Config:
             ),
             width=int(os.getenv("FRAME_WIDTH", "1200")),
             height=int(os.getenv("FRAME_HEIGHT", "1600")),
+            rotation_degrees=int(os.getenv("FRAME_ROTATION", "0")),
             rotation_seconds=int(os.getenv("ROTATION_SECONDS", "3600")),
             new_photo_hold_seconds=int(os.getenv("NEW_PHOTO_HOLD_SECONDS", "3900")),
             scan_interval_seconds=int(os.getenv("SCAN_INTERVAL_SECONDS", "300")),
@@ -159,12 +162,15 @@ class Config:
             face_min_score=float(os.getenv("FACE_MIN_SCORE", "0.30")),
             face_margin_ratio=float(os.getenv("FACE_MARGIN_RATIO", "0.75")),
             min_crop_retained_fraction=float(os.getenv("MIN_CROP_RETAINED_FRACTION", "0.0")),
+            min_face_retained_fraction=float(os.getenv("MIN_FACE_CROP_RETAINED_FRACTION", "0.0")),
             analysis_batch_size=int(os.getenv("ANALYSIS_BATCH_SIZE", "8")),
         )
 
     def validate(self) -> None:
         if not 100 <= self.width <= 10000 or not 100 <= self.height <= 10000:
             raise RuntimeError("frame dimensions must be between 100 and 10000 pixels")
+        if self.rotation_degrees not in {0, 90, 180, 270}:
+            raise RuntimeError("frame rotation must be 0, 90, 180, or 270 degrees")
         if self.rotation_seconds < 300:
             raise RuntimeError("rotation interval must be at least 5 minutes")
         if self.new_photo_hold_seconds < 300:
@@ -181,6 +187,8 @@ class Config:
             raise RuntimeError("face margin ratio must be between 0 and 3")
         if not 0 <= self.min_crop_retained_fraction <= 1:
             raise RuntimeError("minimum retained crop fraction must be between 0 and 1")
+        if not 0 <= self.min_face_retained_fraction <= 1:
+            raise RuntimeError("minimum retained face-crop fraction must be between 0 and 1")
         if not 0 <= self.analysis_batch_size <= 100:
             raise RuntimeError("analysis batch size must be between 0 and 100")
         if self.face_detector not in {"yunet", "immich", "none"}:
@@ -554,12 +562,21 @@ def recency_weight(age_days: float) -> float:
     return 1.0 + 6.0 * math.exp(-max(0.0, age_days) / 21.0)
 
 
+def orient_image(image: Image.Image, rotation_degrees: int) -> Image.Image:
+    """Apply camera metadata, then rotate clockwise for the physical display."""
+    oriented = ImageOps.exif_transpose(image)
+    if rotation_degrees:
+        oriented = oriented.rotate(-rotation_degrees, expand=True)
+    return oriented.convert("RGB")
+
+
 def analysis_version(config: Config) -> str:
     model = config.face_model if config.face_detector == "immich" else "yunet-2023mar"
     return (
         f"{config.face_detector}-{model}-v1"
         f":score={config.face_min_score:.3f}"
         f":margin={config.face_margin_ratio:.3f}"
+        f":rotation={config.rotation_degrees}"
     )
 
 
@@ -600,6 +617,7 @@ def calculate_face_safe_crop(
     target_height: int,
     margin_ratio: float,
     min_retained_fraction: float = 0.0,
+    min_face_retained_fraction: float | None = None,
 ) -> dict[str, Any]:
     """Return a normalized crop box, or a contain fallback for unsafe groups."""
     source_aspect = image_width / image_height
@@ -612,7 +630,10 @@ def calculate_face_safe_crop(
         crop_height = source_aspect / target_aspect
 
     retained_fraction = crop_width * crop_height
-    if retained_fraction < min_retained_fraction:
+    retained_threshold = min_retained_fraction
+    if faces and min_face_retained_fraction is not None:
+        retained_threshold = min_face_retained_fraction
+    if retained_fraction < retained_threshold:
         return {
             "mode": "contain-aspect-fallback",
             "box": [0.0, 0.0, 1.0, 1.0],
@@ -691,7 +712,7 @@ def detect_faces_yunet(source: Path, config: Config) -> tuple[int, int, list[dic
         raise RuntimeError(f"YuNet model is missing: {config.face_model_path}")
 
     with Image.open(source) as original:
-        image = ImageOps.exif_transpose(original).convert("RGB")
+        image = orient_image(original, config.rotation_degrees)
         image_width, image_height = image.size
         preview = image.copy()
     preview.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
@@ -729,7 +750,7 @@ def detect_faces_immich(source: Path, config: Config) -> tuple[int, int, list[di
         raise RuntimeError("face analysis URL is not configured")
 
     with Image.open(source) as original:
-        image = ImageOps.exif_transpose(original).convert("RGB")
+        image = orient_image(original, config.rotation_degrees)
         image_width, image_height = image.size
         preview = image.copy()
     preview.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
@@ -799,6 +820,7 @@ def analyze_photo(item: dict[str, Any], config: Config) -> dict[str, Any]:
         config.height,
         config.face_margin_ratio,
         config.min_crop_retained_fraction,
+        config.min_face_retained_fraction,
     )
     face_count = len(faces)
     return {
@@ -828,6 +850,7 @@ def analysis_for_layout(analysis: dict[str, Any], config: Config) -> dict[str, A
         config.height,
         config.face_margin_ratio,
         config.min_crop_retained_fraction,
+        config.min_face_retained_fraction,
     )
     adjusted["crop"] = crop
     face_count = len(faces)
@@ -840,7 +863,7 @@ def analysis_for_layout(analysis: dict[str, Any], config: Config) -> dict[str, A
 def render_contained_blur(source: Path, target: Path, config: Config) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as original:
-        image = ImageOps.exif_transpose(original).convert("RGB")
+        image = orient_image(original, config.rotation_degrees)
         background = ImageOps.fit(
             image,
             (config.width, config.height),
@@ -890,7 +913,7 @@ def render_analyzed_photo(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as original:
-        image = ImageOps.exif_transpose(original).convert("RGB")
+        image = orient_image(original, config.rotation_degrees)
         width, height = image.size
         left, top, right, bottom = (float(value) for value in box)
         pixel_box = (
@@ -1040,6 +1063,7 @@ class Worker:
                     "version": (analysis or {}).get("analysis_version"),
                     "crop": (analysis or {}).get("crop"),
                     "frame": [self.config.width, self.config.height],
+                    "rotation": self.config.rotation_degrees,
                 },
                 sort_keys=True,
             ).encode()

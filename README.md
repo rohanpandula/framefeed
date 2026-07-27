@@ -24,9 +24,10 @@ family pictures. FrameFeed grew from that small, personal goal.
 ## Features
 
 - Mirrors a NAS folder or an experimental Apple Shared Album public website.
-- Runs face detection locally with the compact, MIT-licensed OpenCV YuNet model.
-- Crops toward faces without stretching photos; falls back to the complete image
-  over a blurred background when a safe crop would discard too much.
+- Offers Basic face-only CV cropping with the compact, MIT-licensed OpenCV
+  YuNet model and an optional Advanced face-and-person pipeline.
+- Crops toward the primary people without stretching photos; falls back to the
+  complete image over a blurred background when a safe crop is uncertain.
 - Shows a newly discovered photo for 65 minutes, then returns to a deterministic,
   recency-weighted shuffle with a 24-photo no-repeat window.
 - Writes face boxes, layout decisions, and descriptions to a private JSONL cache.
@@ -42,7 +43,7 @@ flowchart LR
     A["NAS folder"] --> C["Private photo catalog"]
     B["Apple Shared Album"] --> C
     C --> D["Recent-biased selector"]
-    D --> E["Face-safe renderer"]
+    D --> E["Basic or Advanced CV renderer"]
     E --> F["One anonymous JPEG + HTML"]
     F --> G["E-paper display"]
 ```
@@ -50,12 +51,80 @@ flowchart LR
 Original images and analysis metadata stay on your server. The display receives
 only the current pre-rendered frame.
 
+## CV cropping modes
+
+FrameFeed has two useful levels of computer-vision cropping:
+
+| Mode | Detectors | Hardware | Best for |
+| --- | --- | --- | --- |
+| **Basic** | OpenCV YuNet faces | CPU; no GPU required | Simple installs and modest photo libraries |
+| **Advanced** | SCRFD `buffalo_l` faces plus YOLO26s people | NVIDIA CUDA, Intel OpenVINO, or CPU | Small or obscured subjects, groups, and busy backgrounds |
+
+### Basic: face-aware cropping
+
+Basic mode is the original FrameFeed cropper and remains the default. It finds
+faces, protects configurable space around them, and shifts the largest
+target-aspect crop that keeps the group safe. If the photo is too tall, the
+group is too wide, or detection is unavailable, it displays the complete image
+over a blurred fill.
+
+Basic mode is deliberately lightweight. It runs on ordinary x86-64 and ARM64
+CPUs and does not require CUDA, OpenVINO, or a separate inference service.
+
+### Advanced: subject-aware cropping
+
+Advanced mode adds foreground-person detection to the face boxes. Its cropper:
+
+- merges duplicate person detections;
+- ignores tiny, distant background people;
+- keeps faces and useful upper-body context instead of requiring every foot;
+- caps face-only zoom when another undetected person may be present; and
+- returns to the Basic decision whenever a tighter crop cannot be proven safe.
+
+The reference deployment uses Immich's SCRFD `buffalo_l` face detector and a
+YOLO26s person detector. Models and embeddings are not published with the
+rendered frame; only normalized boxes and the crop decision are retained in
+private state. The Advanced detector service and corpus evaluation utilities
+are in [`scripts/person_service.py`](scripts/person_service.py),
+[`scripts/detect_people.py`](scripts/detect_people.py), and
+[`scripts/evaluate_crops.py`](scripts/evaluate_crops.py). Advanced mode is
+currently an opt-in deployment profile rather than the default Compose stack.
+
+#### Advanced hardware backends
+
+- **NVIDIA GPU:** run the detector through CUDA. The reference Unraid deployment
+  uses an RTX A4000.
+- **Intel integrated GPU:** [export the YOLO model to OpenVINO](https://docs.ultralytics.com/modes/export/),
+  pass
+  `/dev/dri` into the detector container, and compile the model for `GPU`.
+  OpenVINO reports the integrated GPU as `GPU.0` (or simply `GPU`).
+- **CPU:** OpenVINO can run the exported model on `CPU`, but analysis will take
+  longer.
+
+An Intel iGPU does not use the CUDA container or VAAPI/Quick Sync inference
+path. It needs the OpenVINO runtime and Intel compute driver. Because FrameFeed
+analyzes still photos in the background rather than real-time video, an Intel
+iGPU can be a practical way to reserve a discrete GPU for other workloads.
+Benchmark the complete corpus before changing a working deployment. See
+OpenVINO's [Intel GPU configuration guide](https://docs.openvino.ai/2024/get-started/configurations/configurations-intel-gpu.html)
+for driver and container requirements. The Advanced model and Ultralytics
+runtime are not bundled; review their upstream licenses before redistribution.
+
+On the reference server, an Intel UHD 770 processed a 340-photo corpus in about
+72 seconds and reproduced 99.1% of the A4000 square-input crop decisions within
+a 2% coordinate tolerance. It is fast enough for FrameFeed's background
+analysis, although the A4000 remains roughly 3.3× faster under matched
+preprocessing. See the [Advanced CV backend benchmark](docs/advanced-cv-benchmark.md)
+for the method and complete results.
+
 ## Prerequisites
 
 - Docker Engine with Docker Compose v2; Unraid is supported.
 - A folder of JPEG, PNG, HEIC, HEIF, or WebP images.
 - About 1 GB of free space for the container image and local state.
 - An HTTPS reverse proxy, VPN, or private LAN if the display is outside your home.
+- Advanced mode additionally needs a supported inference backend and more
+  container storage; Basic mode has no GPU requirement.
 
 ## Installation
 
@@ -108,7 +177,7 @@ Anyone who obtains the Apple public-album URL can view that album. Read
 
 For a landscape reTerminal E1004:
 
-1. Keep `FRAME_WIDTH=1600` and `FRAME_HEIGHT=1200` in `.env`.
+1. Keep `FRAME_WIDTH=1600`, `FRAME_HEIGHT=1200`, and `FRAME_ROTATION=0` in `.env`.
 2. In SenseCraft HMI, add a **Web** widget.
 3. Choose **Live iframe** as the render mode.
 4. Set preview width to `1600` and preview height to `1200`.
@@ -136,10 +205,12 @@ each rotation window, so restarts do not unexpectedly change the frame.
 | Setting | Default | Purpose |
 | --- | ---: | --- |
 | `FRAME_WIDTH` / `FRAME_HEIGHT` | `1600` / `1200` | Rendered frame size |
+| `FRAME_ROTATION` | `0` | Clockwise output rotation (`0`, `90`, `180`, or `270`) |
 | `ROTATION_SECONDS` | `3600` | Normal display time |
 | `NEW_PHOTO_HOLD_SECONDS` | `3900` | Time reserved for a new photo |
 | `SCAN_INTERVAL_SECONDS` | `300` | Folder scan frequency |
 | `MIN_CROP_RETAINED_FRACTION` | `0.75` | Use contain mode below this safe-crop fraction |
+| `MIN_FACE_CROP_RETAINED_FRACTION` | `0.50` | Allow tighter crops when detected faces remain safe |
 | `FACE_DETECTOR` | `yunet` | `yunet`, `immich`, or `none` |
 | `FACE_MARGIN_RATIO` | `0.75` | Space protected around detected faces |
 | `ANALYSIS_BATCH_SIZE` | `8` | Background analyses per scan |
